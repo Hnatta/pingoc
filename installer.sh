@@ -1,33 +1,16 @@
 #!/bin/sh
 
-# Fungsi untuk menampilkan animasi persentase
-show_progress() {
-    local percent=0
-    local steps=10
-    local delay=0.5  # Jeda dalam detik untuk setiap langkah
-
-    echo -n "Proses instalasi: ["
-    while [ $percent -lt 100 ]; do
-        percent=$((percent + steps))
-        if [ $percent -gt 100 ]; then
-            percent=100
-        fi
-        echo -n "===="
-        sleep $delay
-    done
-    echo "] 100% Selesai!"
-}
-
 # 1. Script ini akan dijalankan dengan perintah:
 # curl -fsSL https://raw.githubusercontent.com/Hnatta/pingoc/main/installer.sh | sh
 
 # 2. Definisikan variabel untuk URL, path ZIP, dan direktori ekstraksi
+# Mendefinisikan URL tempat file ZIP diunduh, path sementara untuk menyimpan ZIP, dan pola direktori hasil ekstraksi
 ZIP_URL="${ZIP_URL:-https://github.com/Hnatta/pingoc/archive/refs/heads/main.zip}"
 ZIP_PATH="${ZIP_PATH:-/tmp/pingoc-main.zip}"
 EXTRACT_DIR_GLOB="${EXTRACT_DIR_GLOB:-/tmp/pingoc-*}"
 
 # 3. Menghapus file yang sudah ada di sistem OpenWrt
-echo "Menghapus file lama..."
+# Menghapus file konfigurasi dan skrip yang sudah ada untuk memastikan tidak ada konflik
 rm -f /etc/pingoc.env
 rm -f /usr/bin/modem
 rm -f /usr/bin/pingoc
@@ -40,9 +23,8 @@ rm -f /www/tinyfm/pingoc.html
 rm -f /www/tinyfm/yamloc.html
 
 # 4. Unduh dan ekstrak file ZIP dari URL yang ditentukan
-echo "Mengunduh file ZIP..."
+# Mengunduh file ZIP dari URL dan mengekstraknya ke direktori sementara
 curl -fsSL "$ZIP_URL" -o "$ZIP_PATH"
-echo "Mengekstrak file..."
 unzip -o "$ZIP_PATH" -d /tmp
 
 # Menemukan direktori hasil ekstraksi berdasarkan pola
@@ -52,8 +34,8 @@ if [ -z "$EXTRACT_DIR" ]; then
     exit 1
 fi
 
-# Memindahkan file dari hasil ekstraksi ke lokasi tujuan
-echo "Menyalin file ke direktori sistem..."
+# Memindahkan file dari hasil ekstraksi ke lokasi tujuan dengan paksa menimpa
+# Menyalin file dari direktori ekstraksi ke path yang sesuai di sistem
 cp -f "$EXTRACT_DIR/files/etc/pingoc.env" /etc/pingoc.env
 cp -f "$EXTRACT_DIR/files/usr/bin/modem" /usr/bin/modem
 cp -f "$EXTRACT_DIR/files/usr/bin/pingoc" /usr/bin/pingoc
@@ -66,7 +48,7 @@ cp -f "$EXTRACT_DIR/files/www/tinyfm/pingoc.html" /www/tinyfm/pingoc.html
 cp -f "$EXTRACT_DIR/files/www/tinyfm/yamloc.html" /www/tinyfm/yamloc.html
 
 # 5. Mengatur izin akses untuk file yang disalin
-echo "Mengatur izin akses..."
+# Memberikan izin eksekusi (0755) untuk file yang perlu dijalankan dan izin baca (0644) untuk file lainnya
 chmod 0755 /etc/pingoc.env
 chmod 0755 /usr/bin/modem
 chmod 0755 /usr/bin/pingoc
@@ -79,19 +61,16 @@ chmod 0644 /www/tinyfm/pingoc.html
 chmod 0644 /www/tinyfm/yamloc.html
 
 # 6. Menambahkan perintah ke startup lokal
-echo "Menambahkan perintah startup..."
+# Menambahkan perintah untuk menjalankan pingoc setelah boot dengan jeda 182 detik
 echo "sleep 182 && /usr/bin/pingoc -r" >> /etc/rc.local
 
-# 7. Restart service LuCI (uhttpd)
-echo "Merestart service LuCI..."
+# 7. Restart service LuCI (uhttpd) agar perubahan diterapkan
+# Merestart service uhttpd untuk memastikan antarmuka web LuCI diperbarui
 /etc/init.d/uhttpd restart
 
 # 8. Membersihkan file sementara
-echo "Membersihkan file sementara..."
+# Menghapus file ZIP dan direktori hasil ekstraksi untuk membersihkan sistem
 rm -f "$ZIP_PATH"
 rm -rf "$EXTRACT_DIR"
-
-# Menampilkan animasi persentase
-show_progress
 
 echo "Instalasi selesai!"
