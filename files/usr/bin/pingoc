@@ -7,10 +7,10 @@ ENV_FILE="${ENV_FILE:-/etc/pingoc.env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 # ================== KONFIG Perintah ==================
-MODEM_CMD="${MODEM_CMD:-/usr/bin/modem ip}"          # ganti ip modem
-MODEM_RBT="${MODEM_RBT:-/usr/bin/modem rb}"          # reboot modem
-OC_RST="${OC_RST:-/etc/init.d/openclash start}"      # start openclash
-OWRT_RST="${OWRT_RST:-/sbin/reboot}"                 # reboot openwrt
+MODEM_CMD="${MODEM_CMD:-"/usr/bin/modem ip"}"          # ganti ip modem
+MODEM_RBT="${MODEM_RBT:-"/usr/bin/modem rb"}"          # reboot modem
+OC_RST="${OC_RST:-"/etc/init.d/openclash start"}"      # start openclash
+OWRT_RST="${OWRT_RST:-"/sbin/reboot"}"                 # reboot openwrt
 
 # ================== KONFIG PINGOC ==================
 CTRL="${CTRL:-http://192.168.1.1:9090}"
@@ -312,3 +312,4 @@ case "${1:-}" in
   -h|--help|"") print_usage ;;
   *) log "Opsi tidak dikenal: $1"; print_usage; exit 1 ;;
 esac
+
