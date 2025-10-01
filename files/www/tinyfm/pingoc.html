@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pingoc Log</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #0f151d; --text: #eaf1fb; --muted: #9aa7b8; --border: #1b2532;
+    --ok: #22c55e; --err: #ef4444; --inf: #7aa2f7; --r: 12px; --shadow: 0 4px 12px rgba(0,0,0,0.2)
+  }
+  * { box-sizing: border-box }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 ui-sans-serif, system-ui, Segoe UI, Roboto, Arial;
+    padding: 16px
+  }
+  .wrap { max-width: 1100px; margin: 0 auto }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+    padding: 12px; box-shadow: var(--shadow); transition: transform 0.2s
+  }
+  .card:hover { transform: translateY(-2px) }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center }
+  .pill {
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 12px;
+    background: #0d131a
+  }
+  .btn {
+    appearance: none; border: 1px solid var(--border); background: #0d131a; color: var(--text);
+    padding: 6px 12px; border-radius: 10px; cursor: pointer; font-weight: 600; transition: background 0.2s
+  }
+  .btn:hover { background: #1b2532 }
+  input[type="text"] {
+    border: 1px solid var(--border); background: #0d141b; color: var(--text); padding: 6px 10px;
+    border-radius: 10px; outline: none; font-size: 12px
+  }
+  input[type="checkbox"] { transform: translateY(1px); cursor: pointer }
+  pre.log {
+    margin: 0; border: 1px solid var(--border); border-radius: 10px; background: #0a1016;
+    height: 37dvh; overflow: auto; font: 10px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; padding: 10px
+  }
+  .l.ok { color: var(--ok) } .l.err { color: var(--err) } .l.inf { color: var(--inf) }
+  .list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 }
+  .item {
+    display: flex; justify-content: space-between; gap: 8px; align-items: center;
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: #0c1219
+  }
+  .lhs { display: flex; gap: 8px; align-items: center }
+  .tag {
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px
+  }
+  .tag.ok { color: var(--ok); border-color: var(--ok) }
+  .tag.err { color: var(--err); border-color: var(--err) }
+  .tag.inf { color: var(--inf); border-color: var(--inf) }
+  .mono, .next-time {
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px
+  }
+  @media (max-width: 720px) {
+    .logurl { display: none; }
+    .cntr { display: flex; justify-content: center; align-items: center; flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="card">
+    <div class="row" style="display: flex; justify-content: center;">
+      <button id="startFollow" class="btn tag ok">Start</button>
+      <button id="stopFollow" class="btn tag err">Stop</button>
+      <button id="clearBtn" class="btn tag inf">Clear</button>
+    </div>
+    <div id="info" class="row" style="margin-top:8px"></div>
+    <div id="groupList" class="list"></div>
+    <div class="row" style="margin-bottom:8px">
+      <span class="pill logurl">Sumber: <input id="logUrl" type="text" value="/cgi-bin/pingoc-log.sh" size="24"></span>
+      <label class="pill"><input id="autoscroll" type="checkbox" checked>Scroll</label>
+      <span class="pill">Last: <span id="lastUp" class="mono">—</span></span>
+      <span class="pill">Now: <span id="currentTime" class="mono">—</span></span>
+    </div>
+    <pre id="log" class="log"></pre>
+    <div class="row" style="margin-top:8px">
+      <label class="pill"><input id="fInfo" type="checkbox" checked> Info</label>
+      <label class="pill"><input id="fErr" type="checkbox" checked> Error</label>
+      <label class="pill"><input id="fOk" type="checkbox" checked> Berhasil</label>
+    </div>
+  </section>
+</div>
+<script>
+(() => {
+  // Seleksi elemen DOM
+  const $ = s => document.querySelector(s);
+  const logEl = $('#log'), fInfo = $('#fInfo'), fErr = $('#fErr'), fOk = $('#fOk');
+  const lastUp = $('#lastUp'), urlInput = $('#logUrl'), autoScroll = $('#autoscroll');
+  const clearBtn = $('#clearBtn'), startBtn = $('#startFollow'), stopBtn = $('#stopFollow');
+  const groupList = $('#groupList');
+  const currentTimeEl = $('#currentTime');
+  const infoEl = $('#info');
+
+  let cacheText = '';
+  let lastLines = [];
+  let lastLogTime = null;
+  let logTimer = null;
+  let ipUpdateTimer = null;
+  let lastKnownIP = null;
+
+  // Interval deteksi per grup (dalam detik)
+  const groupDelays = {
+    'SGR_ACTIVE': 310,
+    'IDN_ACTIVE': 230,
+    'WRD_ACTIVE': 150
+  };
+  const DEFAULT_INTERVAL = 30; // Default 30 detik jika grup tidak ada di groupDelays
+
+  // Fungsi untuk mengambil dan menampilkan informasi IP, negara, dan ISP
+  async function fetchIPInfo() {
+    let ipClass = 'err';
+    let countryClass = 'err';
+    let ispClass = 'err';
+    let ip = 'Error';
+    let country = 'Error';
+    let isp = 'Error';
+
+    try {
+      const response = await fetch(`https://ipinfo.io/json?t=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+      const data = await response.json();
+      
+      ipClass = 'ok';
+      countryClass = 'ok';
+      ispClass = 'inf';
+      ip = data.ip || '—';
+      try {
+        const regionNames = new Intl.DisplayNames(['id'], { type: 'region' });
+        country = data.country ? (regionNames.of(data.country) || data.country) : '—';
+      } catch (error) {
+        console.warn('Intl.DisplayNames tidak didukung, menggunakan fallback');
+        country = data.country || '—';
+      }
+      isp = data.org ? data.org.replace(/^AS\d+\s+/, '') : '—';
+
+      if (ip !== '—' && ip !== 'Error') {
+        lastKnownIP = ip;
+      }
+    } catch (error) {
+      console.error('Gagal mengambil info IP:', error.message);
+    }
+
+    if (!infoEl) {
+      console.error('Elemen DOM untuk info tidak ditemukan');
+      return;
+    }
+
+    infoEl.innerHTML = `
+      <span class="pill">IPv4 Publik: <span class="tag ${ipClass}">${ip}</span></span>
+      <span class="pill">Negara: <span class="tag ${countryClass}">${country}</span></span>
+      <span class="pill">ISP: <span class="mono tag ${ispClass}">${isp}</span></span>
+    `;
+  }
+
+  // Fungsi untuk mengatur pembaruan IP setiap 90 detik saat halaman aktif
+  function setupIPUpdate() {
+    if (ipUpdateTimer) {
+      clearInterval(ipUpdateTimer);
+      ipUpdateTimer = null;
+    }
+    if (document.visibilityState === 'visible') {
+      ipUpdateTimer = setInterval(fetchIPInfo, 90000);
+    }
+  }
+
+  // Event listener untuk visibilitas halaman
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      fetchIPInfo();
+      setupIPUpdate();
+    } else {
+      if (ipUpdateTimer) {
+        clearInterval(ipUpdateTimer);
+        ipUpdateTimer = null;
+      }
+    }
+  });
+
+  // Fungsi utilitas
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const levelOf = line => {
+    const s = line.toLowerCase();
+    if (s.includes('fail:') || s.includes('error') || s.includes('gagal') || s.includes('alert')) return 'err';
+    if (s.includes('ok:') || s.includes('berhasil') || s.includes('sukses')) return 'ok';
+    return 'inf';
+  };
+  const groupFrom = line => {
+    const m = line.match(/\b(?:OK|FAIL):\s*([A-Z0-9_-]+)/);
+    return m ? m[1] : null;
+  };
+  const tsOf = line => {
+    let m = line.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+    if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+    m = line.match(/^[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+(\d{4})/);
+    if (m) {
+      const idx = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 }[m[1]] ?? 0;
+      const d = parseInt(m[2], 10), t = m[3].split(':').map(Number), y = parseInt(m[4], 10);
+      return new Date(y, idx, d, t[0], t[1], t[2]);
+    }
+    return null;
+  };
+
+  // Fungsi untuk memperbarui waktu saat ini
+  function updateCurrentTime() {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('id-ID', {
+      hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+    if (currentTimeEl) currentTimeEl.textContent = timeStr;
+  }
+
+  // Timer untuk waktu saat ini
+  let currentTimeTimer = setInterval(updateCurrentTime, 1000);
+  updateCurrentTime();
+
+  // Fungsi untuk parsing log
+  function parseLog(text) {
+    try {
+      const json = JSON.parse(text);
+      lastLines = json.log || [];
+    } catch (e) {
+      lastLines = [text];
+    }
+    lastLogTime = null;
+    const stats = { lastStatus: {}, lastSeen: {} };
+    for (const ln of lastLines) {
+      const t = tsOf(ln);
+      if (t && (!lastLogTime || t.getTime() > lastLogTime.getTime())) lastLogTime = t;
+      const g = groupFrom(ln);
+      if (g && t) {
+        stats.lastSeen[g] = t.getTime();
+        const lvl = levelOf(ln);
+        if (lvl === 'ok') stats.lastStatus[g] = 'OK';
+        else if (lvl === 'err') stats.lastStatus[g] = 'FAIL';
+      }
+    }
+  }
+
+  // Fungsi untuk render log
+  function renderLog() {
+    const out = lastLines
+      .filter(ln => (levelOf(ln) === 'inf' && fInfo.checked) || (levelOf(ln) === 'err' && fErr.checked) || (levelOf(ln) === 'ok' && fOk.checked))
+      .map(ln => `<span class="l ${levelOf(ln)}">${esc(ln)}</span>`);
+    logEl.innerHTML = out.join('\n');
+    if (autoScroll.checked) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // Fungsi untuk render daftar grup
+  function renderGroups() {
+    const stats = { lastStatus: {}, lastSeen: {} };
+    for (const ln of lastLines) {
+      const t = tsOf(ln);
+      const g = groupFrom(ln);
+      if (g && t) {
+        stats.lastSeen[g] = t.getTime();
+        const lvl = levelOf(ln);
+        if (lvl === 'ok') stats.lastStatus[g] = 'OK';
+        else if (lvl === 'err') stats.lastStatus[g] = 'FAIL';
+      }
+    }
+
+    // Buat array grup dengan waktu Next untuk pengurutan
+    const groups = [...new Set(Object.keys(stats.lastStatus))].map(g => {
+      const interval = (groupDelays[g] || DEFAULT_INTERVAL) * 1000; // Interval dalam milidetik
+      const nextTime = stats.lastSeen[g] ? stats.lastSeen[g] + interval : Infinity; // Infinity jika tidak ada lastSeen
+      return { name: g, status: stats.lastStatus[g] || '—', last: stats.lastSeen[g], next: nextTime };
+    });
+
+    // Urutkan grup berdasarkan waktu Next (paling dekat ke Date.now() di atas)
+    groups.sort((a, b) => a.next - b.next);
+
+    // Render grup
+    const html = groups.length ? groups.map(g => {
+      const tagCls = g.status === 'OK' ? 'ok' : (g.status === 'FAIL' ? 'err' : 'inf');
+      const last = g.last ? new Date(g.last).toLocaleTimeString('id-ID') : '—';
+      const next = g.next !== Infinity ? new Date(g.next).toLocaleTimeString('id-ID') : '—';
+      return `
+        <div class="item">
+          <div class="lhs">
+            <span class="tag ${tagCls}">${esc(g.name)}</span>
+            <span class="pill cntr">Status: <span class="mono">${g.status}</span></span>
+          </div>
+          <span class="pill cntr">Update: <span class="mono">${last}</span></span>
+          <span class="pill cntr">Next: <span class="mono next-time">${next}</span></span>
+        </div>`;
+    }).join('') : '<div class="item"><span class="pill">Tidak ada grup di log</span></div>';
+    groupList.innerHTML = html;
+  }
+
+  // Fungsi untuk mengambil log sekali
+  async function fetchLogOnce() {
+    try {
+      const url = (urlInput.value || '/cgi-bin/pingoc-log.sh') + '?t=' + Date.now();
+      const res = await fetch(url, { cache: 'no-store' });
+      const txt = await res.text();
+      if (txt !== cacheText) {
+        cacheText = txt;
+        parseLog(txt);
+        renderLog();
+        renderGroups();
+        lastUp.textContent = lastLogTime ? lastLogTime.toLocaleTimeString('id-ID') : '—';
+        if (lastLogTime) {
+          const now = new Date();
+          const diff = now.getTime() - lastLogTime.getTime();
+          const nextRefresh = Math.max(500, Math.min(diff * 1.5, 5000));
+          if (logTimer) clearInterval(logTimer);
+          logTimer = setInterval(fetchLogOnce, nextRefresh);
+        }
+      }
+    } catch (e) {
+      logEl.innerHTML = `<span class="l err">Gagal memuat log ${esc(urlInput.value)} — ${esc(e.message || e)} coba refresh halaman</span>`;
+    }
+  }
+
+  // Fungsi untuk menyimpan pengaturan
+  function save() {
+    localStorage.setItem('rotor_ui', JSON.stringify({ logUrl: urlInput.value }));
+  }
+
+  // Fungsi untuk memuat pengaturan
+  function load() {
+    try {
+      const s = JSON.parse(localStorage.getItem('rotor_ui') || '{}');
+      if (s.logUrl) urlInput.value = s.logUrl;
+    } catch {}
+  }
+
+  // Event listener
+  [fInfo, fErr, fOk].forEach(cb => cb.addEventListener('change', () => { renderLog(); renderGroups(); }));
+  clearBtn.addEventListener('click', () => {
+    cacheText = '';
+    lastLines = [];
+    lastLogTime = null;
+    lastKnownIP = null;
+    renderLog();
+    renderGroups();
+    lastUp.textContent = '—';
+    fetchIPInfo();
+    setTimeout(fetchIPInfo, 5000);
+    setTimeout(fetchIPInfo, 10000);
+  });
+  urlInput.addEventListener('change', save);
+  startBtn.addEventListener('click', () => {
+    if (!logTimer) {
+      fetchLogOnce();
+      logTimer = setInterval(fetchLogOnce, 500);
+    }
+  });
+  stopBtn.addEventListener('click', () => {
+    if (logTimer) {
+      clearInterval(logTimer);
+      logTimer = null;
+    }
+    if (ipUpdateTimer) {
+      clearInterval(ipUpdateTimer);
+      ipUpdateTimer = null;
+    }
+  });
+
+  // Inisialisasi
+  load();
+  fetchLogOnce();
+  logTimer = setInterval(fetchLogOnce, 500);
+  fetchIPInfo();
+  setupIPUpdate();
+})();
+</script>
+</body>
+</html>

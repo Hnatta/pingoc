@@ -1,0 +1,314 @@
+#!/bin/sh
+# pingoc — Script monitoring grup proxy
+# Penggunaan: pingoc -r|-s
+
+# === KONFIGURASI ENVIRONMENT ===
+ENV_FILE="${ENV_FILE:-/etc/pingoc.env}"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+# ================== KONFIG Perintah ==================
+MODEM_CMD="${MODEM_CMD:-/usr/bin/modem ip}"          # ganti ip modem
+MODEM_RBT="${MODEM_RBT:-/usr/bin/modem rb}"          # reboot modem
+OC_RST="${OC_RST:-/etc/init.d/openclash start}"      # start openclash
+OWRT_RST="${OWRT_RST:-/sbin/reboot}"                 # reboot openwrt
+
+# ================== KONFIG PINGOC ==================
+CTRL="${CTRL:-http://192.168.1.1:9090}"
+SECRET="${SECRET:-12345}" 
+GROUPS="${GROUPS:-SGR_ACTIVE IDN_ACTIVE WRD_ACTIVE}"
+PING_URL="${PING_URL:-https://www.gstatic.com/generate_204}"
+
+# ================== KONFIG GROUP ==================
+SGR_ACTIVE_DELAY="${SGR_ACTIVE_DELAY:-310}"      # untuk SGR_ACTIVE
+IDN_ACTIVE_DELAY="${IDN_ACTIVE_DELAY:-230}"      # untuk IDN_ACTIVE
+WRD_ACTIVE_DELAY="${WRD_ACTIVE_DELAY:-150}"      # untuk WRD_ACTIVE
+
+# === KONFIGURASI RUNTIME ===
+PIDFILE="/var/run/pingoc.pid"
+STATE_DIR="/tmp/pingoc"
+mkdir -p "$STATE_DIR"
+
+# === UTILITAS ===
+log() {
+  printf '%s %s\n' "$(date '+%F %T')" "$*"
+  command -v logger >/dev/null 2>&1 && logger -t "pingoc" "$*"
+}
+
+is_root() {
+  [ "$(id -u)" -eq 0 ] || { echo "Error: Jalankan sebagai root"; exit 1; }
+}
+
+# === CHECK OPENCLASH RUNNING ===
+check_openclash_running() {
+  # Cek API endpoint OpenClash
+  if curl -sS --max-time 3 -H "Authorization: Bearer $SECRET" \
+     "$CTRL/version" >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# === STATUS GRUP FUNCTIONS ===
+ok_file() { echo "$STATE_DIR/$1.ok"; }
+fail_file() { echo "$STATE_DIR/$1.fail"; }
+ts_now() { date +%s; }
+
+get_group_delay() {
+  case "$1" in
+    SGR_ACTIVE) echo "$SGR_ACTIVE_DELAY" ;;
+    IDN_ACTIVE) echo "$IDN_ACTIVE_DELAY" ;;
+    WRD_ACTIVE) echo "$WRD_ACTIVE_DELAY" ;;
+    *) echo "0" ;;
+  esac
+}
+
+is_ok_cached() {
+  g="$1"; f="$(ok_file "$g")"; [ -f "$f" ] || return 1
+  now="$(ts_now)"; old="$(cat "$f" 2>/dev/null || echo 0)"
+  delay="$(get_group_delay "$g")"
+  [ $((now - old)) -lt "$delay" ]
+}
+
+is_fail_delayed() {
+  g="$1"; f="$(fail_file "$g")"; [ -f "$f" ] || return 1
+  now="$(ts_now)"; old="$(cat "$f" 2>/dev/null || echo 0)"
+  delay="$(get_group_delay "$g")"
+  [ $((now - old)) -lt "$delay" ]
+}
+
+mark_ok() {
+  date +%s > "$(ok_file "$1")"
+  rm -f "$(fail_file "$1")" 2>/dev/null || true
+  log "OK: $1"
+}
+
+mark_fail() {
+  rm -f "$(ok_file "$1")" 2>/dev/null || true
+  date +%s > "$(fail_file "$1")"
+  log "FAIL: $1"
+}
+
+any_ok_now() {
+  for g in $GROUPS; do 
+    is_ok_cached "$g" && return 0
+  done
+  return 1
+}
+
+all_fail() {
+  for g in $GROUPS; do 
+    is_ok_cached "$g" && return 1
+  done
+  return 0
+}
+
+# === PING/CURL FUNCTIONS ===
+curl_group() {
+  g="$1"
+  log "CURL: $g"
+  curl -sS --max-time 10 -H "Authorization: Bearer $SECRET" -G \
+    --data-urlencode "url=$PING_URL" \
+    --data-urlencode "timeout=2000" \
+    "$CTRL/group/$g/delay" >/dev/null 2>&1 || true
+}
+
+ping_group() {
+  g="$1"
+  out="$(curl -sS --max-time 10 -H "Authorization: Bearer $SECRET" -G \
+    --data-urlencode "url=$PING_URL" \
+    --data-urlencode "timeout=2000" \
+    "$CTRL/group/$g/delay" 2>/dev/null || true)"
+  printf '%s' "$out" | grep -qE '"[^"]+":[0-9]+'
+}
+
+curl_all_groups() {
+  log "CURL semua grup"
+  for G in $GROUPS; do 
+    curl_group "$G"
+  done
+}
+
+ping_all_groups() {
+  log "PING semua grup"  
+  for G in $GROUPS; do
+    if ping_group "$G"; then 
+      mark_ok "$G"
+    else 
+      mark_fail "$G"
+    fi
+  done
+}
+
+# === MAIN MONITORING LOOP ===
+monitor_loop() {
+  log "=== MULAI MONITORING PINGOC ==="
+
+  # 0. Periksa status OpenClash, jika tidak running jalankan start
+  if ! check_openclash_running; then
+    log "OpenClash tidak running, menjalankan start..."
+    sh -c "$OC_RST" || log "ERROR: $OC_RST gagal"
+    sleep 10
+    if ! check_openclash_running; then
+      log "ERROR: OpenClash masih tidak running, monitoring dihentikan"
+      exit 1
+    fi
+  fi
+
+  # 1. Curl semua group
+  curl_all_groups
+
+  # 2. Lakukan ping PING_URL  
+  ping_all_groups
+
+  # === SIKLUS MONITORING ===
+  while :; do
+    # 3. Jika ada ping - grup menunggu sesuai delay untuk ping kembali
+    if any_ok_now; then
+      # Cek grup yang tidak OK dan sudah melewati delay
+      for G in $GROUPS; do
+        if ! is_ok_cached "$G" && ! is_fail_delayed "$G"; then
+          # 4. Grup yang tidak ada ping akan melakukan curl
+          curl_group "$G"
+          # 4.2 Tunggu 3 detik kemudian lakukan ping
+          sleep 3
+          if ping_group "$G"; then
+            mark_ok "$G"
+          else
+            mark_fail "$G"
+          fi
+        fi
+      done
+
+      sleep 5
+      continue
+    fi
+
+    # 5. Jika semua grup mark_fail
+    if all_fail; then
+      log "Langkah 5: Semua grup gagal"
+      # 5.1 Curl semua grup
+      curl_all_groups
+      # 5.1 Tunggu 3 detik kemudian lakukan ping
+      sleep 3
+      ping_all_groups
+
+      if any_ok_now; then
+        sleep 5
+        continue
+      fi
+
+      # 6. Jika curl semua group tidak ada ping
+      log "Langkah 6: Ganti IP modem"
+      # 6.1 Ganti ip modem, tunggu 10 detik
+      sh -c "$MODEM_CMD" || log "ERROR: $MODEM_CMD gagal"
+      sleep 10
+      # 6.1 Curl semua grup
+      curl_all_groups
+      # 6.1 Tunggu 3 detik kemudian lakukan ping
+      sleep 3
+      ping_all_groups
+
+      if any_ok_now; then
+        sleep 5
+        continue
+      fi
+
+      # 7. Jika tetap tidak ada ping di semua grup
+      log "Langkah 7: Reboot modem"
+      # 7.1 Reboot modem, tunggu 30 detik
+      sh -c "$MODEM_RBT" || log "ERROR: $MODEM_RBT gagal"
+      sleep 30
+      # 7.2 Curl semua grup
+      curl_all_groups
+      # 7.3 Tunggu 3 detik kemudian lakukan ping
+      sleep 3
+      ping_all_groups
+
+      if any_ok_now; then
+        sleep 5
+        continue
+      fi
+
+      # 8. Jika tetap tidak ada ping di semua grup
+      log "Langkah 8: Start OpenClash"
+      # 8.1 Start openclash, tunggu 60 detik
+      sh -c "$OC_RST" || log "ERROR: $OC_RST gagal"
+      sleep 60
+
+      curl_all_groups
+      sleep 3
+      ping_all_groups
+
+      if ! any_ok_now; then
+        log "CRITICAL: Semua upaya gagal, akan retry dalam 60 detik"
+        sleep 60
+      fi
+    fi
+
+    sleep 5
+  done
+}
+
+# === START/STOP FUNCTIONS ===
+start_monitor() {
+  is_root
+
+  # Cek apakah sudah running
+  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    log "Monitor sudah berjalan (PID $(cat "$PIDFILE"))"
+    return 0
+  fi
+
+  # Jalankan monitoring di background
+  "$0" __monitor_loop </dev/null >/dev/null 2>&1 &
+  echo "$!" > "$PIDFILE"
+  log "Monitor dimulai (PID $!)"
+}
+
+stop_monitor() {
+  if [ -f "$PIDFILE" ]; then
+    pid="$(cat "$PIDFILE" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      log "Monitor dihentikan (PID $pid)"
+    else
+      log "Monitor tidak berjalan"
+    fi
+    rm -f "$PIDFILE"
+  else
+    log "Monitor tidak berjalan"
+  fi
+
+  # Bersihkan state files
+  rm -rf "$STATE_DIR" 2>/dev/null || true
+}
+
+print_usage() {
+  cat <<EOF
+Penggunaan:
+  pingoc -r   # Mulai monitoring
+  pingoc -s   # Stop monitoring
+
+Konfigurasi:
+  CTRL=$CTRL
+  SECRET=$SECRET  
+  GROUPS="$GROUPS"
+  Delays: SGR=$SGR_ACTIVE_DELAY, IDN=$IDN_ACTIVE_DELAY, WRD=$WRD_ACTIVE_DELAY detik
+
+Perintah:
+  MODEM_CMD=$MODEM_CMD
+  MODEM_RBT=$MODEM_RBT
+  OC_RST=$OC_RST
+  OWRT_RST=$OWRT_RST
+EOF
+}
+
+# === MAIN ===
+case "${1:-}" in
+  -r)  start_monitor ;;
+  -s)  stop_monitor ;;
+  __monitor_loop) monitor_loop ;;
+  -h|--help|"") print_usage ;;
+  *) log "Opsi tidak dikenal: $1"; print_usage; exit 1 ;;
+esac
