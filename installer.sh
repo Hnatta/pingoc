@@ -53,10 +53,10 @@ chmod 0755 /etc/pingoc.env
 chmod 0755 /usr/bin/modem
 chmod 0755 /usr/bin/pingoc
 chmod 0755 /www/cgi-bin/pingoc-log.sh
-chmod 0644 /usr/lib/lua/luci/controller/pingoc.lua
-chmod 0644 /usr/lib/lua/luci/controller/yamloc.lua
-chmod 0644 /usr/lib/lua/luci/view/pingoc.htm
-chmod 0644 /usr/lib/lua/luci/view/yamloc.htm
+chmod 0755 /usr/lib/lua/luci/controller/pingoc.lua
+chmod 0755 /usr/lib/lua/luci/controller/yamloc.lua
+chmod 0755 /usr/lib/lua/luci/view/pingoc.htm
+chmod 0755 /usr/lib/lua/luci/view/yamloc.htm
 chmod 0644 /www/tinyfm/pingoc.html
 chmod 0644 /www/tinyfm/yamloc.html
 
