@@ -123,7 +123,7 @@ END{
 
 # 10. Jalankan perintah awal | Menjalankan pingoc setelah instalasi
 echo "[installer] Menjalankan pingoc..."
-sleep 3
+sleep 2
 /usr/bin/pingoc -r || true
 
 # 11. Restart service LuCI | Merestart uhttpd untuk menerapkan perubahan
